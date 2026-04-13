@@ -1,0 +1,109 @@
+//+------------------------------------------------------------------+
+//|                                     AfternoonBreakout_Range.mq4  |
+//+------------------------------------------------------------------+
+#property strict
+
+//--- Inputs
+input int      MagicNumber      = 123456;
+input double   RiskPercent      = 1.0;
+input int      TrendPeriod      = 200;      // Filter for long-term direction
+input int      MorningStartHour = 8;        // Start of range observation
+input int      AfternoonStart   = 13;       // Start of trading session
+input int      EndHour          = 17;       // End of trading session
+input double   MaxRangePips     = 40.0;     // Morning range must be smaller than this
+
+//--- Global Variables
+double morningHigh = 0;
+double morningLow  = 0;
+bool   rangeIsValid = false;
+datetime lastTradeDay = 0;
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   int currentHour = Hour();
+   datetime today  = iTime(Symbol(), PERIOD_D1, 0);
+
+   // 1. MORNING PHASE: Define the Range
+   if(currentHour >= MorningStartHour && currentHour < AfternoonStart)
+   {
+      // Reset for a new day
+      if(lastTradeDay != today) {
+         morningHigh = 0;
+         morningLow  = 999999;
+         rangeIsValid = false;
+         lastTradeDay = today;
+      }
+      
+      if(High[0] > morningHigh) morningHigh = High[0];
+      if(Low[0] < morningLow)  morningLow  = Low[0];
+      
+      // Check if the range is tight enough (Compression)
+      double rangeSize = (morningHigh - morningLow) / Point / 10.0; // Pips
+      if(rangeSize > 0 && rangeSize <= MaxRangePips) rangeIsValid = true;
+      else rangeIsValid = false; 
+
+      return; // Do not trade during morning
+   }
+
+   // 2. AFTERNOON PHASE: Trade the Breakout
+   if(currentHour >= AfternoonStart && currentHour < EndHour)
+   {
+      if(!rangeIsValid) return;         // Skip if morning was too volatile
+      if(HasOpenTrade()) return;        // Prevent multiple trades
+      if(AlreadyTradedToday()) return;  // One trade per afternoon
+
+      double ema200 = iMA(NULL, 0, TrendPeriod, 0, MODE_EMA, PRICE_CLOSE, 1);
+      double currentPrice = Close[0];
+      int digits = (int)MarketInfo(Symbol(), MODE_DIGITS);
+      RefreshRates();
+
+      //--- BUY Logic: Price breaks morning high + Trend is up
+      if(currentPrice > ema200 && currentPrice > morningHigh)
+      {
+         double sl = NormalizeDouble(morningLow, digits);
+         double lot = CalculateLotSize(sl);
+         double tp = NormalizeDouble(Ask + (Ask - sl) * 2.0, digits);
+         
+         OrderSend(Symbol(), OP_BUY, lot, Ask, 3, sl, tp, "PM Breakout", MagicNumber, 0, clrBlue);
+      }
+
+      //--- SELL Logic: Price breaks morning low + Trend is down
+      if(currentPrice < ema200 && currentPrice < morningLow)
+      {
+         double sl = NormalizeDouble(morningHigh, digits);
+         double lot = CalculateLotSize(sl);
+         double tp = NormalizeDouble(Bid - (sl - Bid) * 2.0, digits);
+         
+         OrderSend(Symbol(), OP_SELL, lot, Bid, 3, sl, tp, "PM Breakout", MagicNumber, 0, clrRed);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Helper Functions                                                 |
+//+------------------------------------------------------------------+
+bool HasOpenTrade() {
+   for(int i=OrdersTotal()-1; i>=0; i--)
+      if(OrderSelect(i, SELECT_BY_POS) && OrderMagicNumber()==MagicNumber && OrderSymbol()==Symbol()) return true;
+   return false;
+}
+
+bool AlreadyTradedToday() {
+   for(int i=OrdersHistoryTotal()-1; i>=0; i--) {
+      if(OrderSelect(i, SELECT_BY_POS, MODE_HISTORY) && OrderMagicNumber()==MagicNumber)
+         if(OrderCloseTime() >= iTime(Symbol(), PERIOD_D1, 0)) return true;
+   }
+   return false;
+}
+
+double CalculateLotSize(double sl) {
+   double risk = AccountBalance() * (RiskPercent / 100.0);
+   double tick = MarketInfo(Symbol(), MODE_TICKVALUE);
+   double pips = MathAbs(Close[0] - sl) / Point;
+   if(pips <= 0) return 0.01;
+   double lot = NormalizeDouble(risk / (pips * tick), 2);
+   return MathMax(MarketInfo(Symbol(), MODE_MINLOT), MathMin(lot, MarketInfo(Symbol(), MODE_MAXLOT)));
+}
