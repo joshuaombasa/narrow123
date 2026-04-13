@@ -1,0 +1,97 @@
+//+------------------------------------------------------------------+
+//|                     BreakoutSystem_Fixed.mq4                     |
+//+------------------------------------------------------------------+
+#property strict
+
+//--- Inputs
+input int      MagicNumber    = 123456;
+input double   RiskPercent    = 1.0;      // % Risk per trade
+input int      BreakoutPeriod = 20;       // Candles for breakout
+input int      TrendPeriod    = 200;      // EMA period
+input int      ATR_Period     = 14;       // ATR period
+input int      StartHour      = 8;        // Start trading hour
+input int      EndHour        = 17;       // End trading hour
+
+int ticket;
+
+//+------------------------------------------------------------------+
+//| Check if EA already has open trade                               |
+//+------------------------------------------------------------------+
+bool HasOpenTrade()
+{
+   for(int i=0; i<OrdersTotal(); i++)
+   {
+      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+      {
+         if(OrderMagicNumber() == MagicNumber && OrderSymbol() == Symbol())
+            return true;
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Lot Size based on risk                                 |
+//+------------------------------------------------------------------+
+double CalculateLotSize(double stopLossPrice)
+{
+   double riskAmount = AccountBalance() * (RiskPercent / 100.0);
+   double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
+   double stopLossPips = MathAbs(Ask - stopLossPrice) / Point;
+
+   if(stopLossPips <= 0) return 0.01;
+
+   double lot = riskAmount / (stopLossPips * tickValue);
+   return NormalizeDouble(lot, 2);
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // 1. Time Filter
+   if(Hour() < StartHour || Hour() > EndHour) return;
+
+   // 2. Prevent multiple trades
+   if(HasOpenTrade()) return;
+
+   // 3. Volatility Filter (ATR increasing)
+   double atr     = iATR(NULL, 0, ATR_Period, 1);
+   double atrPrev = iATR(NULL, 0, ATR_Period, 2);
+   if(atr <= atrPrev) return;
+
+   // 4. Trend Filter (EMA 200)
+   double ema200 = iMA(NULL, 0, TrendPeriod, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double currentPrice = Close[0];
+
+   // 5. Breakout Levels
+   double highestHigh = High[iHighest(NULL, 0, MODE_HIGH, BreakoutPeriod, 1)];
+   double lowestLow   = Low[iLowest(NULL, 0, MODE_LOW, BreakoutPeriod, 1)];
+
+   double lotSize;
+
+   //--- BUY Logic
+   if(currentPrice > ema200 && currentPrice > highestHigh)
+   {
+      double sl = lowestLow;
+      lotSize = CalculateLotSize(sl);
+
+      double tp = Ask + (Ask - sl) * 2; // 2:1 RR
+
+      ticket = OrderSend(Symbol(), OP_BUY, lotSize, Ask, 3, sl, tp,
+                         "Breakout Buy", MagicNumber, 0, clrBlue);
+   }
+
+   //--- SELL Logic
+   if(currentPrice < ema200 && currentPrice < lowestLow)
+   {
+      double sl = highestHigh;
+      lotSize = CalculateLotSize(sl);
+
+      double tp = Bid - (sl - Bid) * 2; // 2:1 RR
+
+      ticket = OrderSend(Symbol(), OP_SELL, lotSize, Bid, 3, sl, tp,
+                         "Breakout Sell", MagicNumber, 0, clrRed);
+   }
+}
