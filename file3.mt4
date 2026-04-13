@@ -1,0 +1,68 @@
+//+------------------------------------------------------------------+
+//|                             AfternoonBreakout_V5_Refined.mq4     |
+//+------------------------------------------------------------------+
+#property strict
+
+input int      MagicNumber      = 123456;
+input double   RiskPercent      = 1.0;
+input int      MorningStart     = 8; 
+input int      AfternoonStart   = 13;
+input int      EndHour          = 17;
+input double   RangeTightness   = 0.8; // Only trade if range is < 80% of 5-day average
+
+//+------------------------------------------------------------------+
+//| Expert Tick Logic                                                |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   if(Hour() < MorningStart || Hour() >= EndHour) return;
+
+   // 1. Calculate Average Daily Range (ADR) to define "Tightness"
+   double totalRange = 0;
+   for(int i=1; i<=5; i++) totalRange += (iHigh(NULL, PERIOD_D1, i) - iLow(NULL, PERIOD_D1, i));
+   double avgRange = (totalRange / 5);
+
+   // 2. Identify Current Morning Range
+   int startShift = iBarShift(NULL, 0, iTime(NULL, PERIOD_D1, 0) + MorningStart*3600);
+   int endShift   = iBarShift(NULL, 0, iTime(NULL, PERIOD_D1, 0) + AfternoonStart*3600);
+   
+   double morningHigh = High[iHighest(NULL, 0, MODE_HIGH, (startShift - endShift), endShift)];
+   double morningLow  = Low[iLowest(NULL, 0, MODE_LOW, (startShift - endShift), endShift)];
+   double currentMorningRange = morningHigh - morningLow;
+
+   // 3. Trade Entry (Afternoon Only)
+   if(Hour() >= AfternoonStart && Hour() < EndHour)
+   {
+      // FILTER: Only trade if morning was a "Tight Range"
+      if(currentMorningRange > avgRange * RangeTightness) return;
+      if(OrdersTotal() > 0) return;
+
+      double currentPrice = Close[0];
+      
+      // BUY: Break morning high
+      if(currentPrice > morningHigh)
+      {
+         double sl = morningLow;
+         double tp = Ask + (Ask - sl) * 2.0;
+         SendTrade(OP_BUY, Ask, sl, tp);
+      }
+      
+      // SELL: Break morning low
+      if(currentPrice < morningLow)
+      {
+         double sl = morningHigh;
+         double tp = Bid - (sl - Bid) * 2.0;
+         SendTrade(OP_SELL, Bid, sl, tp);
+      }
+   }
+}
+
+void SendTrade(int type, double price, double sl, double tp)
+{
+   double risk = AccountBalance() * (RiskPercent/100.0);
+   double tick = MarketInfo(Symbol(), MODE_TICKVALUE);
+   double pips = MathAbs(price - sl) / Point;
+   double lot  = NormalizeDouble(risk / (pips * tick), 2);
+   
+   OrderSend(Symbol(), type, lot, price, 3, sl, tp, "V5 Refined", MagicNumber, 0, (type==OP_BUY)?clrBlue:clrRed);
+}
