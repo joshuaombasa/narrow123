@@ -1,0 +1,101 @@
+//+------------------------------------------------------------------+
+//|                                   GBP_USD_AfternoonBreakout.mq4 |
+//|                                   Optimized for GBP/USD        |
+//+------------------------------------------------------------------+
+#property strict
+
+input int      MagicNumber      = 123456;
+input double   RiskPercent      = 1.0;
+input int      MorningStart     = 8;     // London Open (GMT/Server time)
+input int      AfternoonStart   = 13;    // NY Pre-market / London Afternoon
+input int      EndHour          = 17;    // London Close
+input double   RangeTightness   = 0.7;   // GBP/USD is volatile; 70% ADR is a tighter filter
+input int      BreakoutBuffer   = 30;    // 3.0 Pips buffer to avoid fakeouts
+
+//+------------------------------------------------------------------+
+//| Expert Tick Logic                                                |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // Basic time guard
+   if(Hour() < MorningStart || Hour() >= EndHour) return;
+
+   // 1. Calculate Average Daily Range (ADR)
+   // GBP/USD has a high ADR; we use 5 days to gauge current volatility
+   double totalRange = 0;
+   for(int i=1; i<=5; i++) totalRange += (iHigh(NULL, PERIOD_D1, i) - iLow(NULL, PERIOD_D1, i));
+   double avgRange = (totalRange / 5);
+
+   // 2. Identify London Morning Range (8:00 to 13:00)
+   int startShift = iBarShift(NULL, 0, iTime(NULL, PERIOD_D1, 0) + MorningStart*3600);
+   int endShift   = iBarShift(NULL, 0, iTime(NULL, PERIOD_D1, 0) + AfternoonStart*3600);
+   
+   double morningHigh = High[iHighest(NULL, 0, MODE_HIGH, (startShift - endShift), endShift)];
+   double morningLow  = Low[iLowest(NULL, 0, MODE_LOW, (startShift - endShift), endShift)];
+   double currentMorningRange = morningHigh - morningLow;
+
+   // 3. Trade Entry Logic
+   if(Hour() >= AfternoonStart && Hour() < EndHour)
+   {
+      // Check if a trade is already open for today (using MagicNumber)
+      if(CountOpenTrades() > 0) return;
+
+      // FILTER: Only trade if London morning was relatively quiet (Consolidation)
+      if(currentMorningRange > avgRange * RangeTightness) return;
+
+      double currentPrice = Close[0];
+      double buffer = BreakoutBuffer * Point; // Convert pips to price decimal
+      
+      // BUY: Break morning high + buffer
+      if(currentPrice > (morningHigh + buffer))
+      {
+         double sl = morningLow; 
+         double tp = Ask + (Ask - sl) * 1.5; // GBP/USD 1:1.5 RR is often more consistent than 1:2
+         SendTrade(OP_BUY, Ask, sl, tp);
+      }
+      
+      // SELL: Break morning low - buffer
+      if(currentPrice < (morningLow - buffer))
+      {
+         double sl = morningHigh;
+         double tp = Bid - (sl - Bid) * 1.5;
+         SendTrade(OP_SELL, Bid, sl, tp);
+      }
+   }
+}
+
+// Check for open trades to prevent multiple entries per day
+int CountOpenTrades()
+{
+   int count = 0;
+   for(int i=OrdersTotal()-1; i>=0; i--)
+   {
+      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+      {
+         if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber) count++;
+      }
+   }
+   return count;
+}
+
+void SendTrade(int type, double price, double sl, double tp)
+{
+   double risk = AccountBalance() * (RiskPercent/100.0);
+   double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
+   
+   // Calculate lot size based on Stop Loss distance
+   double slDistPips = MathAbs(price - sl) / Point;
+   if(slDistPips <= 0) return;
+
+   double lot = NormalizeDouble(risk / (slDistPips * tickValue), 2);
+   
+   // Sanity check for lot size
+   double minLot = MarketInfo(Symbol(), MODE_MINLOT);
+   double maxLot = MarketInfo(Symbol(), MODE_MAXLOT);
+   if(lot < minLot) lot = minLot;
+   if(lot > maxLot) lot = maxLot;
+   
+   int ticket = OrderSend(Symbol(), type, lot, price, 3, sl, tp, "GBPUSD_Breakout", MagicNumber, 0, (type==OP_BUY)?clrBlue:clrRed);
+   
+   if(ticket < 0) Print("Order Error: ", GetLastError());
+}
